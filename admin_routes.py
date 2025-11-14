@@ -1,7 +1,7 @@
 from flask import Blueprint, request, jsonify, session
 from config import conn, cursor
-from mysql.connector import IntegrityError # Pode manter, mas o erro do SQLite é sqlite3.IntegrityError
-import sqlite3 # Importe para capturar o erro específico
+from mysql.connector import IntegrityError 
+import sqlite3 
 import datetime
 
 admin_bp = Blueprint('admin_bp', __name__, url_prefix='/admin')
@@ -62,9 +62,51 @@ def get_alunos():
     if auth_error:
         return auth_error
 
-    cursor.execute('SELECT id_aluno, nome, email, plano, url_foto FROM Aluno ORDER BY nome')
+    # --- NOVO: Captura de filtros e busca ---
+    search = request.args.get('search', None)
+    plano_filter = request.args.get('plano', None)
+
+    # --- ATUALIZADO: Query dinâmica com JOIN e GROUP BY para médias ---
+    # Esta query agora calcula as médias para cada aluno
+    
+    base_query = """
+        SELECT 
+            a.id_aluno, a.nome, a.email, a.plano, a.url_foto,
+            AVG(CASE WHEN qr.total_perguntas > 0 THEN qr.acertos * 1.0 / qr.total_perguntas ELSE NULL END) as media_geral,
+            AVG(CASE WHEN qr.total_perguntas > 0 AND qr.tema = 'Filosofia' THEN qr.acertos * 1.0 / qr.total_perguntas ELSE NULL END) as media_filosofia,
+            AVG(CASE WHEN qr.total_perguntas > 0 AND qr.tema = 'Sociologia' THEN qr.acertos * 1.0 / qr.total_perguntas ELSE NULL END) as media_sociologia
+        FROM 
+            aluno a
+        LEFT JOIN 
+            quiz_resultado qr ON a.id_aluno = qr.id_aluno
+    """
+    
+    where_clauses = []
+    params = []
+
+    if search:
+        where_clauses.append("(a.nome LIKE ? OR a.email LIKE ?)")
+        params.extend([f"%{search}%", f"%{search}%"])
+
+    if plano_filter:
+        where_clauses.append("a.plano = ?")
+        params.append(plano_filter)
+
+    if where_clauses:
+        base_query += " WHERE " + " AND ".join(where_clauses)
+
+    base_query += """
+        GROUP BY 
+            a.id_aluno, a.nome, a.email, a.plano, a.url_foto
+        ORDER BY 
+            a.nome
+    """
+    
+    cursor.execute(base_query, tuple(params))
     alunos = cursor.fetchall()
+    
     return jsonify([dict(a) for a in alunos]), 200
+
 
 @admin_bp.route('/alunos', methods=['POST'])
 def create_aluno():
@@ -76,7 +118,7 @@ def create_aluno():
     nome = data.get('nome')
     email = data.get('email')
     senha = data.get('senha')
-    plano = data.get('plano', 'freemium') # Default 'freemium'
+    plano = data.get('plano', 'freemium') 
 
     if not nome or not email or not senha:
         return jsonify({'error': 'Nome, email e senha são obrigatórios.'}), 400
@@ -99,7 +141,7 @@ def update_aluno(id_aluno):
     nome = data.get('nome')
     email = data.get('email')
     plano = data.get('plano')
-    senha = data.get('senha') # Senha é opcional na atualização
+    senha = data.get('senha') 
 
     campos = []
     valores = []
@@ -113,7 +155,7 @@ def update_aluno(id_aluno):
     if plano:
         campos.append("plano=?")
         valores.append(plano)
-    if senha:
+    if senha: # Só atualiza a senha se ela for enviada
         campos.append("senha=?")
         valores.append(senha)
 
@@ -157,20 +199,26 @@ def get_stats():
 
         # Stat 2: Alunos por Plano (Gráfico de Pizza)
         cursor.execute('SELECT plano, COUNT(*) as count FROM Aluno GROUP BY plano')
-        alunos_por_plano = [dict(r) for r in cursor.fetchall()] # Formato: [{'plano': 'freemium', 'count': 10}, ...]
+        alunos_por_plano = [dict(r) for r in cursor.fetchall()]
 
-        # Stat 3: Média de Acertos Geral (pode ser um card)
-        # --- CORREÇÃO AQUI ---
-        # Multiplicamos por 1.0 para forçar a divisão de ponto flutuante (float)
-        # E adicionamos WHERE para evitar divisão por zero
-        cursor.execute('SELECT AVG(acertos * 1.0 / total_perguntas) as media_geral FROM quiz_resultado WHERE total_perguntas > 0')
-        # --- FIM DA CORREÇÃO ---
+        # --- NOVO: Média de Acertos Específicas ---
         
+        # Média Geral
+        cursor.execute('SELECT AVG(acertos * 1.0 / total_perguntas) as media FROM quiz_resultado WHERE total_perguntas > 0')
         media_geral_result = cursor.fetchone()
-        media_geral = media_geral_result['media_geral'] if media_geral_result else None
-        
-        # Stat 4: Novos Alunos nos Últimos 7 Dias (Gráfico de Linha)
-        # Esta consulta agora funcionará, pois a coluna id_aluno existe
+        media_geral = media_geral_result['media'] if media_geral_result and media_geral_result['media'] is not None else 0
+
+        # Média Filosofia (Apenas para quizzes com tema exato)
+        cursor.execute("SELECT AVG(acertos * 1.0 / total_perguntas) as media FROM quiz_resultado WHERE total_perguntas > 0 AND tema = 'Filosofia'")
+        media_filo_result = cursor.fetchone()
+        media_filosofia = media_filo_result['media'] if media_filo_result and media_filo_result['media'] is not None else 0
+
+        # Média Sociologia (Apenas para quizzes com tema exato)
+        cursor.execute("SELECT AVG(acertos * 1.0 / total_perguntas) as media FROM quiz_resultado WHERE total_perguntas > 0 AND tema = 'Sociologia'")
+        media_socio_result = cursor.fetchone()
+        media_sociologia = media_socio_result['media'] if media_socio_result and media_socio_result['media'] is not None else 0
+
+        # Stat 4: Quizzes nos Últimos 7 Dias (Gráfico de Linha)
         today = datetime.date.today()
         seven_days_ago = today - datetime.timedelta(days=7)
         
@@ -180,23 +228,18 @@ def get_stats():
             WHERE data_criacao >= ?
             GROUP BY DATE(data_criacao)
             ORDER BY dia ASC
-        """, (seven_days_ago,)) # SQLite usa ?
+        """, (seven_days_ago,))
         
         quizzes_ultimos_dios = [dict(r) for r in cursor.fetchall()]
         
         # Formatando para o gráfico
         labels_dias = []
         data_dias = []
-        
-        # Converte as datas de string (SQLite) para objeto date
         quizzes_map = {datetime.date.fromisoformat(item['dia']): item['novos_quizzes'] for item in quizzes_ultimos_dios}
 
-        # Preenche os últimos 7 dias
         for i in range(7):
             day = seven_days_ago + datetime.timedelta(days=i)
             labels_dias.append(day.strftime('%d/%m'))
-            
-            # Encontra o dado para esse dia, ou usa 0
             count_do_dia = quizzes_map.get(day, 0)
             data_dias.append(count_do_dia)
 
@@ -204,7 +247,9 @@ def get_stats():
         stats = {
             'total_alunos': total_alunos,
             'alunos_por_plano': alunos_por_plano,
-            'media_geral_acertos': f"{media_geral * 100:.2f}%" if media_geral else "N/A",
+            'media_geral_acertos': f"{media_geral * 100:.2f}%",
+            'media_filosofia': f"{media_filosofia * 100:.2f}%",
+            'media_sociologia': f"{media_sociologia * 100:.2f}%",
             'quizzes_por_dia': {
                 'labels': labels_dias,
                 'data': data_dias

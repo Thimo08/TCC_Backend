@@ -1,5 +1,3 @@
-# Em app.py
-
 from flask import Flask, session, jsonify, request # Garanta que request está importado
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit
@@ -13,7 +11,8 @@ from config import conn, cursor # Assuming config.py is correctly set up
 from auth_routes import auth_bp
 from freemium_routes import freemium_bp
 from premium_routes import premium_bp
-from admin_routes import admin_bp # <--- ADICIONE ESTA LINHA
+from admin_routes import admin_bp 
+from quiz_routes import quiz_bp # <--- ADICIONE ESTA LINHA
 
 # --- Configurações Iniciais ---
 load_dotenv()
@@ -44,7 +43,8 @@ MODEL_NAME = "gemini-2.5-flash"
 app.register_blueprint(auth_bp)
 app.register_blueprint(freemium_bp)
 app.register_blueprint(premium_bp)
-app.register_blueprint(admin_bp) # <--- ADICIONE ESTA LINHA
+app.register_blueprint(admin_bp) 
+app.register_blueprint(quiz_bp) # <--- ADICIONE ESTA LINHA
 
 # --- Rota Principal (Teste) ---
 @app.route('/')
